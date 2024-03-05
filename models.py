@@ -4,6 +4,8 @@ from torch.utils.data import Dataset
 from utils import *
 from itertools import combinations
 
+import pdb
+
 class EnsumbleParamDataset(Dataset):
     def __init__(self, params:list):
         ''' Input: param 1,2,3 and x,y,z '''
@@ -457,7 +459,8 @@ class DecompGridv2(torch.nn.Module):
             x1d_f = torch.floor(x1dn)
             weights = x1dn-x1d_f
             x1d_f = x1d_f
-            f1d = torch.lerp(self.lines[i][:,x1d_f.type(torch.int)], self.lines[i][:,torch.clamp(x1d_f+1.0, min=0.0, max=self.line_dims[i]-1).type(torch.int)], weights)
+            pdb.set_trace()
+            f1d = torch.lerp(self.lines[i][:,x1d_f.type(torch.long)], self.lines[i][:,torch.clamp(x1d_f+1.0, min=0.0, max=self.line_dims[i]-1).type(torch.long)], weights)
             f1d = f1d.squeeze()
             feats_3d = feats_3d * f1d
         return feats_3d.T
@@ -503,7 +506,7 @@ class INR_FG(torch.nn.Module):
         self.fc2 = torch.nn.Linear(self.hidden_nodes, self.hidden_nodes)
         self.fc3 = torch.nn.Linear(self.hidden_nodes, self.hidden_nodes)
         self.fc4 = torch.nn.Linear(self.hidden_nodes, out_features)
-        self.act = torch.nn.ReLU()
+        self.act = SnakeAlt()
 
     def forward(self, x):
         x = self.dg(x)

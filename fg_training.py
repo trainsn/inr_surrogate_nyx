@@ -9,6 +9,8 @@ import argparse
 from tqdm import tqdm
 import math
 
+import pdb
+
 # parse arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Deep Learning Model")
@@ -24,8 +26,8 @@ def parse_args():
                         help="path to the latest checkpoint (default: none)")
     parser.add_argument("--dsp", type=int, default=3,
                         help="dimensions of the simulation parameters (default: 3)")
-    parser.add_argument("--lr", type=float, default=1e-4,
-                        help="learning rate (default: 1e-4)")
+    parser.add_argument("--lr", type=float, default=5e-5,
+                        help="learning rate (default: 5e-5)")
     parser.add_argument("--sp-sr", type=float, default=0.3,
                         help="simulation parameter sampling rate (default: 0.2)")
     parser.add_argument("--sf-sr", type=float, default=0.05,
@@ -62,7 +64,7 @@ def main(args):
     # log hyperparameters
     print(args)
     scalar_kwargs = {"num_workers": 2, "pin_memory": True}
-    feature_dim = 4
+    feature_dim = 64
     out_features = 1
     nEnsemble = 4
     data_size = 512**3
@@ -85,7 +87,7 @@ def main(args):
             # params min [0.12, 0.0215, 0.55]
             #        max [0.155, 0.0235, 0.85]
             params_np = np.array([float(sps[1]), float(sps[2]), float(sps[3][:-4])], dtype=np.float32)
-            params_np = (params_np - np.array([0.12, 0.0215, 0.55], dtype=np.float32)) / np.array([0.035, 0.002, 0.3], dtype=np.float32)
+            params_np = (params_np - np.array([0.1375, 0.0225, 0.7], dtype=np.float32)) / np.array([0.0175, 0.001, 0.15], dtype=np.float32)
             d = {'file_src': os.path.join(args.root, files[fidx]), 'params': params_np}
             training_dicts.append(d)
 
@@ -95,7 +97,7 @@ def main(args):
     coords = np.hstack((xv, yv, zv)).astype(np.float32)
 
     ensembleParam_dataset = EnsumbleParamDataset(training_dicts)
-    ensembleParam_dataloader = DataLoader(ensembleParam_dataset, batch_size=nEnsemble, shuffle=True, num_workers=0)
+    ensembleParam_dataloader = DataLoader(ensembleParam_dataset, batch_size=nEnsemble, shuffle=True, num_workers=2)
 
     #####################################################################################
 
@@ -117,20 +119,19 @@ def main(args):
         print('Use L1 Loss')
         criterion = torch.nn.L1Loss()
 
+    pdb.set_trace()
     dmin_vdl = 8.6
     dmax_vdl = 13.6
     losses = []
     num_bins = 10
     cluster_size = data_size // np.power(2, 24) # for multinomial, number of categories cannot exceed 2^24
-    bin_width = (dmax_vdl - dmin_vdl) / num_bins
-    max_binidx_f = float(num_bins-1)
     coords_torch = torch.from_numpy(coords)
     batch_size_per_field = args.batch_size // nEnsemble
 
-    def imp_func(data, minval, maxval, bw, maxidx):
-        freq = torch.histc(data, bins=num_bins, min=minval, max=maxval)
+    def imp_func(data):
+        freq = torch.histc(data, bins=num_bins, min=-1., max=1.)
         importance = 1. / freq
-        importance_idx = torch.clamp((data - minval) / bw, min=0.0, max=maxidx).type(torch.long)
+        importance_idx = ((data + 1) / 2. * num_bins).type(torch.long)
         return importance, importance_idx
 
     for epoch in tqdm(range(args.start_epoch, args.epochs)):
@@ -146,6 +147,7 @@ def main(args):
             curr_batch_loss = 0
             for eidx in range(nEnsemble):
                 curr_scalar_field = ReadScalarBinary(ensembleParam_dict['file_src'][eidx])
+                curr_scalar_field = (curr_scalar_field - (dmax_vdl + dmin_vdl) / 2.) / ((dmax_vdl - dmin_vdl) / 2.)
                 curr_scalar_field = torch.from_numpy(curr_scalar_field)
                 scalar_fields.append(curr_scalar_field)
                 curr_params = ensembleParam_dict['params'][eidx].reshape(1,3)
@@ -154,7 +156,7 @@ def main(args):
                     params_batch = curr_params_batch
                 else:
                     params_batch = torch.cat((params_batch, curr_params_batch), 0)
-                curr_imp, curr_impidx = imp_func(curr_scalar_field, dmin_vdl, dmax_vdl, bin_width, max_binidx_f)
+                curr_imp, curr_impidx = imp_func(curr_scalar_field)
                 curr_sample_weights = curr_imp[curr_impidx].reshape(-1, cluster_size).sum(1)
                 sample_weights_arr.append(curr_sample_weights)
             params_batch = torch.autograd.Variable(params_batch).to(device)
@@ -174,6 +176,7 @@ def main(args):
                 coord_batch = torch.autograd.Variable(coord_batch).to(device)
                 value_batch = torch.autograd.Variable(value_batch).to(device)
                 # ===================forward=====================
+                pdb.set_trace()
                 model_output = inr_fg(torch.cat((coord_batch, params_batch), 1))
                 loss = criterion(model_output, value_batch)
                 # ===================backward====================
