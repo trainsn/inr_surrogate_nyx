@@ -73,7 +73,7 @@ def main(args):
     nEnsemble = 4
     data_size = 512**3
     num_sf_batches = math.ceil(nEnsemble * data_size * args.sf_sr / args.batch_size)
-    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim) + '_v' +str(args.fg_version)
+    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim) + '_v' +str(args.fg_version) + '_ensembleimp'
     if args.dropout != 0:
         network_str += '_dp'
 
@@ -100,9 +100,6 @@ def main(args):
     xv, yv, zv = np.meshgrid(xcoords, ycoords, zcoords, indexing='ij')
     xv, yv, zv = xv.flatten().reshape(-1,1), yv.flatten().reshape(-1,1), zv.flatten().reshape(-1,1)
     coords = np.hstack((xv, yv, zv)).astype(np.float32)
-
-    ensembleParam_dataset = EnsumbleParamDataset(training_dicts)
-    ensembleParam_dataloader = DataLoader(ensembleParam_dataset, batch_size=nEnsemble, shuffle=True, num_workers=0)
 
     #####################################################################################
 
@@ -138,11 +135,62 @@ def main(args):
     bin_width = 1.0 / num_bins
     max_binidx_f = float(num_bins-1)
     batch_size_per_field = args.batch_size // nEnsemble
+    nEnsembleGroups_per_epoch = len(training_dicts) // nEnsemble
 
     coords_torch = torch.from_numpy(coords)
 
+    # preprocessing: load all data and compute importance
+    # Only compute once and data is already saved
+    # nBlocks = 16
+    # block_size = data_size // nBlocks
+    # all_freq = None
+    # for tdidx, td in enumerate(training_dicts):
+    #     sf = ReadScalarBinary(td['file_src'])
+    #     sf = (sf-dmin) / (dmax-dmin)
+    #     sf = torch.from_numpy(sf)
+    #     curr_freq = None
+    #     for bidx in range(nBlocks):
+    #         block_freq = torch.histc(sf[bidx*block_size:(bidx+1)*block_size], bins=num_bins, min=0.0, max=1.0).type(torch.long)
+    #         if curr_freq is None:
+    #             curr_freq = block_freq
+    #         else:
+    #             curr_freq += block_freq
+    #     if all_freq is None:
+    #         all_freq = curr_freq
+    #     else:
+    #         all_freq += curr_freq
+    #     print('tdidx: ', tdidx, '  ', torch.sum(all_freq) / 512**3)
+    # all_freq = all_freq.type(torch.double)
+    # importance = 1. / all_freq
+    # sfimps = torch.zeros(len(training_dicts))
+    # for tdidx, td in enumerate(training_dicts):
+    #     sf = ReadScalarBinary(td['file_src'])
+    #     sf = (sf-dmin) / (dmax-dmin)
+    #     sf = torch.from_numpy(sf)
+    #     curr_impidx = torch.clamp(sf / bin_width, min=0.0, max=max_binidx_f).type(torch.long)
+    #     curr_sfimp = importance[curr_impidx].sum()
+    #     sfimps[tdidx] = curr_sfimp
+    #     print('tdidx: ', tdidx, '  ', curr_sfimp)
+    # sfimps = sfimps / sfimps.sum()
+    # sfimps_np = sfimps.numpy()
+    # np.save(args.dir_outputs + 'ensemble_member_importances', sfimps_np)
+
+    sfimps_np = np.load(args.dir_outputs + 'ensemble_member_importances.npy')
+    sfimps = torch.from_numpy(sfimps_np)
+
+    #####################################################################################
+
     def imp_func(data, minval, maxval, bw, maxidx):
-        freq = torch.histc(data, bins=num_bins, min=minval, max=maxval)
+        freq = None
+        nBlocks = 16
+        block_size = data_size // nBlocks
+        for bidx in range(nBlocks):
+            block_freq = torch.histc(data[bidx*block_size:(bidx+1)*block_size], bins=num_bins, min=minval, max=maxval).type(torch.long)
+            if freq is None:
+                freq = block_freq
+            else:
+                freq += block_freq
+        freq = freq.type(torch.double)
         importance = 1. / freq
         importance_idx = torch.clamp((data - minval) / bw, min=0.0, max=maxidx).type(torch.long)
         return importance, importance_idx
@@ -150,18 +198,20 @@ def main(args):
     for epoch in tqdm(range(args.start_epoch, args.epochs)):
         print('epoch {0}'.format(epoch+1))
         total_loss = 0
-        for param_idx, ensembleParam_dict in enumerate(ensembleParam_dataloader):
+        e_rndidx = torch.multinomial(sfimps, nEnsembleGroups_per_epoch * nEnsemble, replacement=True)
+        for egidx in range(nEnsembleGroups_per_epoch):
             tstart = time.time()
             scalar_fields = []
             sample_weights_arr = []
             params_batch = None
             errsum = 0
             # Load and compute importance map
-            for eidx in range(len(ensembleParam_dict['file_src'])):
-                curr_scalar_field = ReadScalarBinary(ensembleParam_dict['file_src'][eidx])
+            for eidx in range(nEnsemble):
+                curr_scalar_field = ReadScalarBinary(training_dicts[e_rndidx[egidx*nEnsemble + eidx]]['file_src'])
                 curr_scalar_field = (curr_scalar_field-dmin) / (dmax-dmin)
                 curr_scalar_field = torch.from_numpy(curr_scalar_field)
-                curr_params = ensembleParam_dict['params'][eidx].reshape(1,3)
+                curr_params = training_dicts[e_rndidx[egidx*nEnsemble + eidx]]['params'].reshape(1,3)
+                curr_params = torch.from_numpy(curr_params)
                 curr_params_batch = curr_params.repeat(batch_size_per_field, 1)
                 if params_batch is None:
                     params_batch = curr_params_batch
@@ -207,7 +257,7 @@ def main(args):
         losses.append(total_loss)
         if (epoch+1) % args.log_every == 0:
             print('epoch {0}, loss = {1}'.format(epoch+1, total_loss))
-            print("====> Epoch: {0} Average {1} loss: {2:.4f}".format(epoch+1, args.loss, total_loss / 100))
+            print("====> Epoch: {0} Average {1} loss: {2:.4f}".format(epoch+1, args.loss, total_loss / len(training_dicts)))
             plt.plot(losses)
 
             plt.savefig(args.dir_outputs + 'fg_inr_loss_' + network_str + '.jpg')
