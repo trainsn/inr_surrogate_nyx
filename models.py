@@ -975,7 +975,7 @@ class DecompGridv9(torch.nn.Module):
             p1d_f = torch.floor(p1dn)
             weights = p1dn-p1d_f
             p1d_f = p1d_f
-            f1d = torch.lerp(self.lines[i][:,p1d_f.type(torch.int)], self.lines[i][:,torch.clamp(p1d_f+1.0, min=0.0, max=self.line_dims[i]-1).type(torch.int)], weights)
+            f1d = torch.lerp(self.lines[i][:,p1d_f.type(torch.long)], self.lines[i][:,torch.clamp(p1d_f+1.0, min=0.0, max=self.line_dims[i]-1).type(torch.long)], weights)
             f1d = f1d.squeeze()
             param_feats = param_feats * f1d
         feats = torch.cat((spatial_feats.T, param_feats.T), 1)

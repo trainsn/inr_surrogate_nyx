@@ -6,6 +6,10 @@ def ReadScalarBinary(filename):
     data = np.log10(data)
     return data
 
+def ReadMPASOScalar(filename):
+    data = np.load(filename)
+    return data
+
 def pytorch_device_config():
     #  configuring device
     if torch.cuda.is_available():

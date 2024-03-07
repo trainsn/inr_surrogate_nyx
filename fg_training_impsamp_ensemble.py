@@ -175,7 +175,7 @@ def main(args):
     # sfimps_np = sfimps.numpy()
     # np.save(args.dir_outputs + 'ensemble_member_importances', sfimps_np)
 
-    sfimps_np = np.load(args.dir_outputs + 'ensemble_member_importances.npy')
+    sfimps_np = np.load('ensemble_member_importances.npy')
     sfimps = torch.from_numpy(sfimps_np)
 
     #####################################################################################
