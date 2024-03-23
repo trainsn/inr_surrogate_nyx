@@ -101,8 +101,8 @@ def main(args):
     coords = coords.astype(np.float32)
     data_dicts = []
     for idx in range(len(filenames)):
-        # params min [0.0, 300.0, 0.25, 100.0, 1]
-        #        max [5.0, 1500.0, 1.0, 300.0, 384]
+        # params min [0.0, 300.0, 0.25, 100.0]
+        #        max [5.0, 1500.0, 1.0, 300.0]
         params = np.array(params_arr[idx][1:])
         params = (params.astype(np.float32) - np.array([0.0, 300.0, 0.25, 100.0], dtype=np.float32)) / \
                  np.array([5.0, 1200.0, .75, 200.0], dtype=np.float32)
