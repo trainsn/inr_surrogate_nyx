@@ -9,6 +9,8 @@ import argparse
 from tqdm import tqdm
 import math
 
+import pdb
+
 # parse arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Deep Learning Model")
@@ -62,8 +64,6 @@ def parse_args():
                         help="dimension of feature for parameter domain in feature grids")
     parser.add_argument("--dropout", type=int, default=0,
                         help="using dropout layer in MLP, 0: No, other: Yes (default: 0)")
-    parser.add_argument("--fg-version", type=int, default=2,
-                        help="feature grid version")
     return parser.parse_args()
 
 def main(args):
@@ -71,12 +71,12 @@ def main(args):
     print(args)
     scalar_kwargs = {"num_workers": 2, "pin_memory": True}
     # feature_dim = 4
-    out_features = 1
+    out_features = 4
     nEnsemble = 4
     data_size = 11845146
     num_sf_batches = math.ceil(nEnsemble * data_size * args.sf_sr / args.batch_size)
     num_sp_sampling = math.ceil(70 * args.sp_sr)
-    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim) + '_v' + str(args.fg_version)
+    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim)
     if args.loss == 'MSE':
         network_str += '_MSE'
     else:
@@ -120,9 +120,9 @@ def main(args):
 
     feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(3, dtype=np.int32)*args.dim1d))
     if args.dropout != 0:
-        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, args.fg_version, True)
+        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, True)
     else:
-        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, args.fg_version, False)
+        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, False)
     if args.start_epoch > 0:
         inr_fg.load_state_dict(torch.load(os.path.join(args.dir_weights, "fg_model_" + network_str + '_'+ str(args.start_epoch) + ".pth")))
     print(inr_fg)
@@ -254,6 +254,7 @@ def main(args):
                 value_batch = value_batch.to(device)
                 # ===================forward=====================
                 model_output = inr_fg(torch.cat((coord_batch, params_batch), 1))
+                pdb.set_trace()
                 loss = criterion(model_output, value_batch)
                 # ===================backward====================
                 optimizer.zero_grad()
