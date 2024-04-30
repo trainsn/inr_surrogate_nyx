@@ -1,5 +1,6 @@
 from models import *
 from utils import *
+import loss_helper
 import os
 import numpy as np
 from torch.utils.data import DataLoader
@@ -26,8 +27,6 @@ def parse_args():
                         help="dimensions of the simulation parameters (default: 3)")
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="learning rate (default: 1e-4)")
-    parser.add_argument("--sp-sr", type=float, default=0.3,
-                        help="simulation parameter sampling rate (default: 0.2)")
     parser.add_argument("--sf-sr", type=float, default=0.05,
                         help="scalar field sampling rate (default: 0.02)")
     parser.add_argument("--beta1", type=float, default=0.0,
@@ -62,18 +61,23 @@ def parse_args():
                         help="dimension of feature for parameter domain in feature grids")
     parser.add_argument("--dropout", type=int, default=0,
                         help="using dropout layer in MLP, 0: No, other: Yes (default: 0)")
-    parser.add_argument("--fg-version", type=int, default=2,
-                        help="feature grid version")
     return parser.parse_args()
 
 def main(args):
     # log hyperparameters
     print(args)
-    out_features = 1
+    out_features = 4 if args.loss == 'Evidential' else 1
     nEnsemble = 4
-    data_size = 512**3
+    data_size = 512 ** 3
     num_sf_batches = math.ceil(nEnsemble * data_size * args.sf_sr / args.batch_size)
-    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim) + '_v' +str(args.fg_version) + '_ensembleimp'
+    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim)
+    if args.loss == 'Evidential':
+        network_str += '_Evidential'
+    elif args.loss == 'MSE':
+        network_str += '_MSE'
+    else:
+        network_str += '_L1'
+
     if args.dropout != 0:
         network_str += '_dp'
 
@@ -105,9 +109,9 @@ def main(args):
 
     feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(3, dtype=np.int32)*args.dim1d))
     if args.dropout != 0:
-        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, args.fg_version, True)
+        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, True)
     else:
-        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, args.fg_version, False)
+        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, False)
     if args.start_epoch > 0:
         inr_fg.load_state_dict(torch.load(os.path.join(args.dir_weights, "fg_model_" + network_str + '_'+ str(args.start_epoch) + ".pth")))
     print(inr_fg)
@@ -198,6 +202,7 @@ def main(args):
     for epoch in tqdm(range(args.start_epoch, args.epochs)):
         print('epoch {0}'.format(epoch+1))
         total_loss = 0
+        total_mse = 0
         e_rndidx = torch.multinomial(sfimps, nEnsembleGroups_per_epoch * nEnsemble, replacement=True)
         for egidx in range(nEnsembleGroups_per_epoch):
             tstart = time.time()
@@ -241,17 +246,23 @@ def main(args):
                 value_batch = value_batch.to(device)
                 # ===================forward=====================
                 model_output = inr_fg(torch.cat((coord_batch, params_batch), 1))
-                loss = criterion(model_output, value_batch)
+                if args.loss == 'Evidential':
+                    loss = loss_helper.EvidentialRegression(value_batch, model_output, coeff=1e-2)
+                    gamma, _, _, _ = torch.chunk(model_output, 4, dim=-1) 
+                    mse = torch.mean((gamma - value_batch) ** 2)
+                else:
+                    loss = criterion(model_output, value_batch)
                 # ===================backward====================
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                batch_mean_loss = loss.data.cpu().numpy()
-                errsum += batch_mean_loss * nEnsemble * batch_size_per_field
-                total_loss += batch_mean_loss
+                batch_mse = mse.item() if args.loss == 'Evidential' else loss.data.cpu().numpy()
+                errsum += batch_mse * nEnsemble * batch_size_per_field
+                total_loss += loss.data.cpu().numpy()
+                total_mse += batch_mse
             tend = time.time()
-            mse = errsum / (nEnsemble * batch_size_per_field * num_sf_batches)
-            curr_psnr = - 10. * np.log10(mse)
+            curr_mse = errsum / (nEnsemble * batch_size_per_field * num_sf_batches)
+            curr_psnr = - 10. * np.log10(curr_mse)
             print('Training time: {0:.4f} for {1} data points x {2} batches, approx PSNR = {3:.4f}'\
                   .format(tend-tstart, nEnsemble * batch_size_per_field, num_sf_batches, curr_psnr))
         losses.append(total_loss)
