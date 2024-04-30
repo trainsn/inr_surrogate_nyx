@@ -1,5 +1,6 @@
 from models import *
 from utils import *
+import loss_helper
 import os
 import numpy as np
 from torch.utils.data import DataLoader
@@ -71,13 +72,15 @@ def main(args):
     print(args)
     scalar_kwargs = {"num_workers": 2, "pin_memory": True}
     # feature_dim = 4
-    out_features = 4
+    out_features = 4 if args.loss == 'Evidential' else 1
     nEnsemble = 4
     data_size = 11845146
     num_sf_batches = math.ceil(nEnsemble * data_size * args.sf_sr / args.batch_size)
     num_sp_sampling = math.ceil(70 * args.sp_sr)
     network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim)
-    if args.loss == 'MSE':
+    if args.loss == 'Evidential':
+        network_str += '_Evidential'
+    elif args.loss == 'MSE':
         network_str += '_MSE'
     else:
         network_str += '_L1'
@@ -211,6 +214,7 @@ def main(args):
     for epoch in tqdm(range(args.start_epoch, args.epochs)):
         print('epoch {0}'.format(epoch+1))
         total_loss = 0
+        total_mse = 0
         e_rndidx = torch.multinomial(sfimps, nEnsembleGroups_per_epoch * nEnsemble, replacement=True)
         for egidx in range(nEnsembleGroups_per_epoch):
             tstart = time.time()
@@ -254,25 +258,30 @@ def main(args):
                 value_batch = value_batch.to(device)
                 # ===================forward=====================
                 model_output = inr_fg(torch.cat((coord_batch, params_batch), 1))
-                pdb.set_trace()
-                loss = criterion(model_output, value_batch)
+                if args.loss == 'Evidential':
+                    loss = loss_helper.EvidentialRegression(value_batch, model_output, coeff=1e-2)
+                    gamma, _, _, _ = torch.chunk(model_output, 4, dim=-1) 
+                    mse = torch.mean((gamma - value_batch) ** 2)
+                else:
+                    loss = criterion(model_output, value_batch)
                 # ===================backward====================
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                batch_mean_loss = loss.data.cpu().numpy()
-                errsum += batch_mean_loss * nEnsemble * batch_size_per_field
-                total_loss += batch_mean_loss
+                batch_mse = mse.item() if args.loss == 'Evidential' else loss.data.cpu().numpy()
+                errsum += batch_mse * nEnsemble * batch_size_per_field
+                total_loss += loss.data.cpu().numpy()
+                total_mse += batch_mse
             tend = time.time()
-            mse = errsum / (nEnsemble * batch_size_per_field * num_sf_batches)
-            curr_psnr = - 10. * np.log10(mse)
+            curr_mse = errsum / (nEnsemble * batch_size_per_field * num_sf_batches)
+            curr_psnr = - 10. * np.log10(curr_mse)
             print('Training time: {0:.4f} for {1} data points x {2} batches, approx PSNR = {3:.4f}'\
                   .format(tend-tstart, nEnsemble * batch_size_per_field, num_sf_batches, curr_psnr))
         losses.append(total_loss)
 
         if (epoch+1) % args.log_every == 0:
             print('epoch {0}, loss = {1}'.format(epoch+1, total_loss))
-            print("====> Epoch: {0} Average {1} loss: {2:.4f}".format(epoch+1, args.loss, total_loss / num_sp_sampling))
+            print("====> Epoch: {0} Average {1} loss: {2:.4f} MSE: {3:.4f}".format(epoch+1, args.loss, total_loss / num_sp_sampling, total_mse / num_sp_sampling))
             plt.plot(losses)
 
             plt.savefig(args.dir_outputs + 'fg_inr_loss_' + network_str + '.jpg')

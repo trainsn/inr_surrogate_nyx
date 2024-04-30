@@ -1,8 +1,11 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import Dataset
 from utils import *
 from itertools import combinations
+
+import pdb
 
 class EnsumbleParamDataset(Dataset):
     def __init__(self, params:list):
@@ -134,6 +137,7 @@ class INR_FG(torch.nn.Module):
         
         self.hidden_nodes = 128
         self.hasDP = dropout_layer
+        self.out_features = out_features
         self.fc1 = torch.nn.Linear(num_feat_3d + num_feat_1d, self.hidden_nodes)
         self.fc2 = torch.nn.Linear(self.hidden_nodes, self.hidden_nodes)
         self.fc3 = torch.nn.Linear(self.hidden_nodes, self.hidden_nodes)
@@ -150,6 +154,19 @@ class INR_FG(torch.nn.Module):
         torch.nn.init.normal_(self.fc3.bias, 0, 0.001)
         torch.nn.init.xavier_normal_(self.fc4.weight)
         torch.nn.init.normal_(self.fc4.bias, 0, 0.001)
+    
+    def evidence(self, x):
+        # Using softplus as the activation function for evidence
+        return F.softplus(x)
+
+    def DenseNormalGamma(self, x):
+        mu, logv, logalpha, logbeta = x.chunk(4, dim=-1)
+        mu = F.sigmoid(mu)
+        v = self.evidence(logv)
+        alpha = self.evidence(logalpha) + 1
+        beta = self.evidence(logbeta)
+        # Concatenating the tensors along the last dimension
+        return torch.cat([mu, v, alpha, beta], dim=-1)
 
     def forward(self, x):
         x = self.dg(x)
@@ -158,9 +175,9 @@ class INR_FG(torch.nn.Module):
         x = self.relu(self.fc3(x))
         if self.hasDP:
             x = self.dp(x)
-        x = self.sigmoid(self.fc4(x))
+        x = self.fc4(x)
+        if self.out_features == 4:
+            x = self.DenseNormalGamma(x)
+        else:
+            x = self.sigmoid(x)
         return x
-    
-    def forwardFGOnly(self, x):
-        res, coord_features, param_features = self.dg.forwardWithIntermediates(x)
-        return res, coord_features, param_features
