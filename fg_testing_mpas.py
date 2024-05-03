@@ -28,10 +28,6 @@ def parse_args():
                         help="dimensions of the simulation parameters (default: 3)")
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="learning rate (default: 1e-4)")
-    parser.add_argument("--sp-sr", type=float, default=0.3,
-                        help="simulation parameter sampling rate (default: 0.2)")
-    parser.add_argument("--sf-sr", type=float, default=0.05,
-                        help="scalar field sampling rate (default: 0.02)")
     parser.add_argument("--beta1", type=float, default=0.0,
                         help="beta1 of Adam (default: 0.0)")
     parser.add_argument("--beta2", type=float, default=0.999,
@@ -75,9 +71,11 @@ def parse_args():
 def main(args):
     # log hyperparameters
     print(args)
-    out_features = 1
-    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim) + '_v' +str(args.fg_version)
-    if args.loss == 'MSE':
+    out_features = 4 if args.loss == 'Evidential' else 1
+    network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim)
+    if args.loss == 'Evidential':
+        network_str += '_Evidential'
+    elif args.loss == 'MSE':
         network_str += '_MSE'
     else:
         network_str += '_L1'
@@ -103,9 +101,12 @@ def main(args):
     for idx in range(len(filenames)):
         # params min [0.0, 300.0, 0.25, 100.0, 1]
         #        max [5.0, 1500.0, 1.0, 300.0, 384]
-        params = np.array(params_arr[idx][1:])
-        params = (params.astype(np.float32) - np.array([0.0, 300.0, 0.25, 100.0], dtype=np.float32)) / \
-                 np.array([5.0, 1200.0, .75, 200.0], dtype=np.float32)
+        BswA = params_arr[idx][1]  
+        CbrN = params_arr[idx][3]  
+        params = np.array([BswA, CbrN])
+        # params = np.array(params_arr[idx][1:])
+        params = (params.astype(np.float32) - np.array([0.0, 0.25], dtype=np.float32)) / \
+                 np.array([5.0, .75], dtype=np.float32)
         d = {'file_src': os.path.join(args.root, "test", filenames[idx]), 'params': params}
         data_dicts.append(d)
 
@@ -118,25 +119,15 @@ def main(args):
 
     #####################################################################################
 
-    feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(3, dtype=np.int32)*args.dim1d))
+    feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(2, dtype=np.int32)*args.dim1d))
     if args.dropout != 0:
-        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, args.fg_version, True)
+        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, True)
     else:
-        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, args.fg_version, False)
+        inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, False)
     inr_fg.load_state_dict(torch.load(os.path.join(args.dir_weights, "fg_model_" + network_str + '_'+ str(args.start_epoch) + ".pth")))
     inr_fg.eval()
     print(inr_fg)
     inr_fg.to(device)
-
-    if args.loss == 'MSE':
-        print('Use MSE Loss')
-        criterion = torch.nn.MSELoss()
-    elif args.loss == 'L1':
-        print('Use L1 Loss')
-        criterion = torch.nn.L1Loss()
-    else:
-        print('Use L1 Loss')
-        criterion = torch.nn.L1Loss()
 
     dmin = -1.93
     dmax = 30.36
@@ -150,7 +141,7 @@ def main(args):
         for param_idx in range(len(data_dicts)):
             pred = None
             
-            params = data_dicts[param_idx]['params'].reshape(1,4)
+            params = data_dicts[param_idx]['params'].reshape(1, 2)
             params = torch.from_numpy(params)
             params_batch = params.repeat(args.batch_size, 1)
             params_batch = params_batch.to(device)
@@ -163,11 +154,12 @@ def main(args):
                 coord_batch = coord_batch.to(device)
                 # ===================forward=====================
                 model_output = inr_fg(torch.cat((coord_batch, params_batch), 1))
-                model_output = model_output.cpu().numpy().flatten().astype(np.float32)
+                gamma, _, _, _ = torch.chunk(model_output, 4, dim=-1) 
+                gamma = gamma.cpu().numpy().flatten().astype(np.float32)
                 if pred is None:
-                    pred = model_output
+                    pred = gamma
                 else:
-                    pred = np.concatenate((pred, model_output), dtype=np.float32)
+                    pred = np.concatenate((pred, gamma), dtype=np.float32)
             tend = time.time()
 
             gt = ReadMPASOScalar(data_dicts[param_idx]['file_src'])
