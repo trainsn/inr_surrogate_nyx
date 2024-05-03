@@ -8,6 +8,7 @@ import time
 import argparse
 from tqdm import tqdm
 import math
+import itertools
 
 import pdb
 
@@ -87,26 +88,12 @@ def main(args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    fh = open(os.path.join(args.root, "test", "names.txt"))
-    filenames = []
-    for line in fh:
-        filenames.append(line.replace("\n", ""))
+    # Generate parameter combinations
+    param_ranges = np.arange(0.0, 1.0 + 1e-4, 0.1)
+    param_combinations = list(itertools.product(param_ranges, repeat=2))
 
-    params_arr = np.load(os.path.join(args.root, "test/params.npy"))
     coords = np.load(os.path.join(args.root, "sphereCoord.npy"))
     coords = coords.astype(np.float32)
-    data_dicts = []
-    for idx in range(len(filenames)):
-        # params min [0.0, 300.0, 0.25, 100.0]
-        #        max [5.0, 1500.0, 1.0, 300.0]
-        BswA = params_arr[idx][1]  
-        CbrN = params_arr[idx][3]  
-        params = np.array([BswA, CbrN])
-        # params = np.array(params_arr[idx][1:])
-        params = (params.astype(np.float32) - np.array([0.0, 0.25], dtype=np.float32)) / \
-                 np.array([5.0, .75], dtype=np.float32)
-        d = {'file_src': os.path.join(args.root, "test", filenames[idx]), 'params': params}
-        data_dicts.append(d)
 
     lat_min, lat_max = -np.pi / 2, np.pi / 2
     coords[:,0] = (coords[:,0] - (lat_min + lat_max) / 2.0) / ((lat_max - lat_min) / 2.0)
@@ -127,19 +114,17 @@ def main(args):
     print(inr_fg)
     inr_fg.to(device)
 
-    dmin = -1.93
-    dmax = 30.36
-    psnrs = []
-    max_diff = np.zeros(len(data_dicts))
     coords_torch = torch.from_numpy(coords)
     equator = np.load(os.path.join(args.root, "equator_patch.npy"))
-    total_mse = 0.
+
+    sum_pred_sigma = np.zeros((len(param_ranges), len(param_ranges)))
+    sum_pred_var = np.zeros((len(param_ranges), len(param_ranges)))
 
     with torch.no_grad():
-        for param_idx in range(len(data_dicts)):
-            pred = None
+        for idx, params in enumerate(param_combinations):
+            pred_mu, pred_sigma, pred_var = None, None, None
             
-            params = data_dicts[param_idx]['params'].reshape(1, 2)
+            params = np.array(params, dtype=np.float32).reshape(1, 2)
             params = torch.from_numpy(params)
             params_batch = params.repeat(args.batch_size, 1)
             params_batch = params_batch.to(device)
@@ -152,43 +137,48 @@ def main(args):
                 coord_batch = coord_batch.to(device)
                 # ===================forward=====================
                 model_output = inr_fg(torch.cat((coord_batch, params_batch), 1))
-                gamma, _, _, _ = torch.chunk(model_output, 4, dim=-1) 
-                gamma = gamma.cpu().numpy().flatten().astype(np.float32)
-                if pred is None:
-                    pred = gamma
+                model_output = model_output.cpu().numpy().astype(np.float32)
+                gamma, v, alpha, beta = np.split(model_output, 4, axis=-1)
+                mu = gamma[:, 0]
+                sigma = np.sqrt(beta / (alpha - 1))[:, 0]
+                var = np.sqrt(beta / (v * (alpha - 1)))[:, 0]
+                if pred_mu is None:
+                    pred_mu, pred_sigma, pred_var = mu, sigma, var
                 else:
-                    pred = np.concatenate((pred, gamma), dtype=np.float32)
+                    pred_mu = np.concatenate((pred_mu, mu), dtype=np.float32)
+                    pred_sigma = np.concatenate((pred_sigma, sigma), dtype=np.float32)
+                    pred_var = np.concatenate((pred_var, var), dtype=np.float32)
+            i, j = idx // len(param_ranges), idx % len(param_ranges)
+            sum_pred_sigma[i, j] = pred_sigma.sum()
+            sum_pred_var[i, j] = pred_var.sum()
             tend = time.time()
+            
+            print('Parameters:', params, '\tpred_sigma', np.sum(pred_sigma), '\tpred_var:', np.sum(pred_var))
+            print('Inference time: {0:.4f}'.format(tend-tstart))
 
-            gt = ReadMPASOScalar(data_dicts[param_idx]['file_src'])
-            pred = pred * (dmax-dmin) + dmin
-            if args.equator:
-                gt = gt * equator
-                gt = gt[abs(gt) > 0]
-                pred = pred * equator
-                pred = pred[abs(pred) > 0]
-            diff = abs(gt - pred)
-            max_diff[param_idx] = diff.max()
-            mse = np.mean((gt - pred)**2)
-            total_mse += mse
-            if args.equator: 
-                psnr = 20. * np.log10(29.50 - 11.00) - 10. * np.log10(mse)
-            else:
-                psnr = 20. * np.log10(dmax - dmin) - 10. * np.log10(mse)
-            psnrs.append(psnr)
-            print('Inference time: {0:.4f} , data: {1}'.format(tend-tstart, data_dicts[param_idx]['file_src']))
-            print('PSNR = {0:.4f}, MSE = {1:.4f}'.format(psnr, mse))
-            if args.save:
-                pred.astype(np.float64).tofile(args.dir_outputs + network_str + '_' + filenames[param_idx][:filenames[param_idx].rfind('.')] + '.bin')
-        if args.equator: 
-            print('<<<<<<<  PSNR = {0:.4f} >>>>>>>>>>'.format(20. * np.log10(29.50 - 11.00) -
-                    10. * np.log10(total_mse / len(data_dicts))))
-            print('<<<<<<<  Max Diff = {0:.4f} >>>>>>>>>>'.format(max_diff.mean() / (29.50 - 11.00)))
-        else:
-            print('<<<<<<<  PSNR = {0:.4f} >>>>>>>>>>'.format(20. * np.log10(dmax - dmin) -
-                    10. * np.log10(total_mse / len(data_dicts))))
-            print('<<<<<<<  Max Diff = {0:.4f} >>>>>>>>>>'.format(max_diff.mean() / (dmax - dmin)))
-    
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+        # Plot heatmap for sum of predicted sigma
+        im1 = axs[0].imshow(sum_pred_sigma, cmap='plasma', extent=[0, 1, 1, 0])
+        axs[0].set_title('Aleatoric Uncertainty')
+        axs[0].set_xlabel('CbrN')
+        axs[0].set_ylabel('BwsA')
+        axs[0].set_xticks(param_ranges)
+        axs[0].set_yticks(param_ranges)
+        fig.colorbar(im1, ax=axs[0])
+
+        # Plot heatmap for sum of predicted variance
+        im2 = axs[1].imshow(sum_pred_var, cmap='viridis', extent=[0, 1, 1, 0])
+        axs[1].set_title('Epistemic Uncertainty')
+        axs[1].set_xlabel('CbrN')
+        axs[1].set_ylabel('BwsA')
+        axs[1].set_xticks(param_ranges)
+        axs[1].set_yticks(param_ranges)
+        fig.colorbar(im2, ax=axs[1])
+
+        # Show the plots
+        plt.tight_layout()
+        plt.show()
 
 if __name__ == '__main__':
     main(parse_args())

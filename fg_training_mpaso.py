@@ -100,17 +100,20 @@ def main(args):
     coords = np.load(os.path.join(args.root, "sphereCoord.npy"))
     coords = coords.astype(np.float32)
     data_dicts = []
+    valid_data = []
     for idx in range(len(filenames)):
         # params min [0.0, 300.0, 0.25, 100.0]
         #        max [5.0, 1500.0, 1.0, 300.0]
         BswA = params_arr[idx][1]  
-        CbrN = params_arr[idx][3]  
-        params = np.array([BswA, CbrN])
-        # params = np.array(params_arr[idx][1:])
-        params = (params.astype(np.float32) - np.array([0.0, 0.25], dtype=np.float32)) / \
-                 np.array([5.0, .75], dtype=np.float32)
-        d = {'file_src': os.path.join(args.root, "train", filenames[idx]), 'params': params}
-        data_dicts.append(d)
+        if BswA < 3.75:
+            CbrN = params_arr[idx][3]  
+            params = np.array([BswA, CbrN])
+            # params = np.array(params_arr[idx][1:])
+            params = (params.astype(np.float32) - np.array([0.0, 0.25], dtype=np.float32)) / \
+                    np.array([5.0, .75], dtype=np.float32)
+            d = {'file_src': os.path.join(args.root, "train", filenames[idx]), 'params': params}
+            data_dicts.append(d)
+            valid_data.append(idx)
 
     lat_min, lat_max = -np.pi / 2, np.pi / 2
     coords[:,0] = (coords[:,0] - (lat_min + lat_max) / 2.0) / ((lat_max - lat_min) / 2.0)
@@ -192,6 +195,7 @@ def main(args):
     # np.save(args.dir_outputs + 'ensemble_member_importances', sfimps_np)
 
     sfimps_np = np.load(args.dir_outputs + 'ensemble_member_importances.npy')
+    sfimps_np = sfimps_np[valid_data]
     sfimps = torch.from_numpy(sfimps_np)
 
     #####################################################################################
