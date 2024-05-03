@@ -95,8 +95,10 @@ def main(args):
             sps = files[fidx].split('_')
             # params min [0.12, 0.0215, 0.55]
             #        max [0.155, 0.0235, 0.85]
-            params_np = np.array([float(sps[1]), float(sps[2]), float(sps[3][:-4])], dtype=np.float32)
-            params_np = (params_np - np.array([0.12, 0.0215, 0.55], dtype=np.float32)) / np.array([0.035, 0.002, 0.3], dtype=np.float32)
+            OmM = float(sps[1])
+            h = float(sps[3][:-4])
+            params_np = np.array([OmM, h],  dtype=np.float32)
+            params_np = (params_np - np.array([0.12, 0.55], dtype=np.float32)) / np.array([0.035, 0.3], dtype=np.float32)
             d = {'file_src': os.path.join(args.root, files[fidx]), 'params': params_np}
             training_dicts.append(d)
 
@@ -107,7 +109,7 @@ def main(args):
 
     #####################################################################################
 
-    feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(3, dtype=np.int32)*args.dim1d))
+    feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(2, dtype=np.int32)*args.dim1d))
     if args.dropout != 0:
         inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, True)
     else:
@@ -215,7 +217,7 @@ def main(args):
                 curr_scalar_field = ReadScalarBinary(training_dicts[e_rndidx[egidx*nEnsemble + eidx]]['file_src'])
                 curr_scalar_field = (curr_scalar_field-dmin) / (dmax-dmin)
                 curr_scalar_field = torch.from_numpy(curr_scalar_field)
-                curr_params = training_dicts[e_rndidx[egidx*nEnsemble + eidx]]['params'].reshape(1,3)
+                curr_params = training_dicts[e_rndidx[egidx*nEnsemble + eidx]]['params'].reshape(1,2)
                 curr_params = torch.from_numpy(curr_params)
                 curr_params_batch = curr_params.repeat(batch_size_per_field, 1)
                 if params_batch is None:
