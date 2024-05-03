@@ -29,8 +29,6 @@ def parse_args():
                         help="dimensions of the simulation parameters (default: 3)")
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="learning rate (default: 1e-4)")
-    parser.add_argument("--sp-sr", type=float, default=0.3,
-                        help="simulation parameter sampling rate (default: 0.2)")
     parser.add_argument("--sf-sr", type=float, default=0.05,
                         help="scalar field sampling rate (default: 0.02)")
     parser.add_argument("--beta1", type=float, default=0.0,
@@ -76,7 +74,6 @@ def main(args):
     nEnsemble = 4
     data_size = 11845146
     num_sf_batches = math.ceil(nEnsemble * data_size * args.sf_sr / args.batch_size)
-    num_sp_sampling = math.ceil(70 * args.sp_sr)
     network_str = str(args.dim3d) + '_' + str(args.dim2d) + '_' + str(args.dim1d) + '_' + str(args.spatial_fdim) + '_' + str(args.param_fdim)
     if args.loss == 'Evidential':
         network_str += '_Evidential'
@@ -106,9 +103,12 @@ def main(args):
     for idx in range(len(filenames)):
         # params min [0.0, 300.0, 0.25, 100.0]
         #        max [5.0, 1500.0, 1.0, 300.0]
-        params = np.array(params_arr[idx][1:])
-        params = (params.astype(np.float32) - np.array([0.0, 300.0, 0.25, 100.0], dtype=np.float32)) / \
-                 np.array([5.0, 1200.0, .75, 200.0], dtype=np.float32)
+        BswA = params_arr[idx][1]  
+        CbrN = params_arr[idx][3]  
+        params = np.array([BswA, CbrN])
+        # params = np.array(params_arr[idx][1:])
+        params = (params.astype(np.float32) - np.array([0.0, 0.25], dtype=np.float32)) / \
+                 np.array([5.0, .75], dtype=np.float32)
         d = {'file_src': os.path.join(args.root, "train", filenames[idx]), 'params': params}
         data_dicts.append(d)
 
@@ -121,7 +121,7 @@ def main(args):
 
     #####################################################################################
 
-    feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(3, dtype=np.int32)*args.dim1d))
+    feature_grid_shape = np.concatenate((np.ones(3, dtype=np.int32)*args.dim3d, np.ones(3, dtype=np.int32)*args.dim2d, np.ones(2, dtype=np.int32)*args.dim1d))
     if args.dropout != 0:
         inr_fg = INR_FG(feature_grid_shape, args.spatial_fdim, args.spatial_fdim, args.param_fdim, out_features, True)
     else:
@@ -227,7 +227,7 @@ def main(args):
                 curr_scalar_field = ReadMPASOScalar(data_dicts[e_rndidx[egidx*nEnsemble + eidx]]['file_src'])
                 curr_scalar_field = (curr_scalar_field-dmin) / (dmax-dmin)
                 curr_scalar_field = torch.from_numpy(curr_scalar_field)
-                curr_params = data_dicts[e_rndidx[egidx*nEnsemble + eidx]]['params'].reshape(1,4)
+                curr_params = data_dicts[e_rndidx[egidx*nEnsemble + eidx]]['params'].reshape(1, 2)
                 curr_params = torch.from_numpy(curr_params)
                 curr_params_batch = curr_params.repeat(batch_size_per_field, 1)
                 if params_batch is None:
@@ -280,8 +280,7 @@ def main(args):
         losses.append(total_loss)
 
         if (epoch+1) % args.log_every == 0:
-            print('epoch {0}, loss = {1}'.format(epoch+1, total_loss))
-            print("====> Epoch: {0} Average {1} loss: {2:.4f} MSE: {3:.4f}".format(epoch+1, args.loss, total_loss / num_sp_sampling, total_mse / num_sp_sampling))
+            print("====> Epoch: {0} {1} loss: {2:.4f} MSE: {3:.4f}".format(epoch+1, args.loss, total_loss, total_mse))
             plt.plot(losses)
 
             plt.savefig(args.dir_outputs + 'fg_inr_loss_' + network_str + '.jpg')
